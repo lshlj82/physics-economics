@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>골턴 보드 시뮬레이션</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: #110c05;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: flex-start;
+    min-height: 100vh;
+    padding: 20px 12px;
+    font-family: 'Georgia', serif;
+    color: #c8a878;
+  }
+  h1 {
+    font-size: 1.05rem;
+    font-weight: normal;
+    letter-spacing: 0.05em;
+    margin-bottom: 14px;
+    color: #d4b88a;
+    text-align: center;
+  }
+  canvas {
+    border: 2px solid #6b5030;
+    box-shadow: 0 0 30px rgba(180,120,40,0.18);
+    display: block;
+    max-width: 100%;
+  }
+  .controls {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    margin-top: 14px;
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+  button {
+    background: #6b4f28;
+    color: #f0ddb0;
+    border: 1px solid #9a7040;
+    padding: 7px 22px;
+    cursor: pointer;
+    border-radius: 3px;
+    font-family: inherit;
+    font-size: 0.9rem;
+    transition: background 0.15s;
+  }
+  button:hover { background: #8a6535; }
+  label {
+    font-size: 0.85rem;
+    color: #b89860;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  input[type=range] {
+    width: 90px;
+    accent-color: #c8903a;
+  }
+  .stat {
+    font-size: 0.82rem;
+    color: #9a7848;
+    text-align: center;
+    margin-top: 8px;
+    min-height: 1.2em;
+  }
+</style>
+</head>
+<body>
+<h1>골턴 보드 시뮬레이션</h1>
+<canvas id="c"></canvas>
+<div class="controls">
+  <button id="btnStart">▶ 시작</button>
+  <button id="btnReset">↺ 초기화</button>
+  <label>속도
+    <input type="range" id="speed" min="1" max="30" value="8">
+  </label>
+</div>
+<div class="stat" id="stat"></div>
+
+<script>
+const canvas = document.getElementById('c');
+const ctx    = canvas.getContext('2d');
+
+// ── 레이아웃 파라미터 ─────────────────────────────────────────────────
+const N  = 12;           // 핀 행 수
+const SX = 32;           // 핀 간격 (x)
+const SY = 36;           // 핀 간격 (y)
+const PR = 5.5;          // 핀 반지름
+const BR = 4;            // 구슬 반지름
+const W  = (N + 1) * SX + 60;
+const H  = 780;
+canvas.width  = W;
+canvas.height = H;
+
+const cx      = W / 2;
+const PIN_Y0  = 70;                         // 첫 행 핀 y
+const BIN_TOP = PIN_Y0 + N * SY + 18;      // 빈 시작 y
+const BIN_H   = H - BIN_TOP - 16;
+const BINS    = N + 1;
+
+// 핀 좌표 계산
+const pins = [];
+for (let r = 0; r < N; r++)
+  for (let c = 0; c <= r; c++)
+    pins.push({ x: cx - r * SX / 2 + c * SX, y: PIN_Y0 + r * SY });
+
+// 빈 중앙 x 좌표
+const binX = i => cx - N / 2 * SX + i * SX;
+
+// ── 시뮬레이션 상태 ───────────────────────────────────────────────────
+let binCounts = new Array(BINS).fill(0);
+let activeBalls = [];
+let totalDropped = 0;
+let running = false;
+let frameN  = 0;
+let animId  = null;
+
+// ── 구슬 클래스 ───────────────────────────────────────────────────────
+class Ball {
+  constructor() {
+    // 경로 미리 결정
+    const path = [];
+    let col = 0;
+    for (let r = 0; r < N; r++) {
+      const go = Math.random() < 0.5 ? 0 : 1;
+      path.push({ x: cx - r / 2 * SX + col * SX, y: PIN_Y0 + r * SY });
+      col += go;
+    }
+    this.bin = col;
+    const finalY = BIN_TOP + BIN_H - binCounts[col] * (BR * 2 + 1) - BR - 2;
+    path.push({ x: binX(col), y: finalY });
+
+    this.waypoints = [{ x: cx, y: 28 }, ...path];
+    this.wi   = 0;
+    this.x    = cx;
+    this.y    = 28;
+    this.done = false;
+  }
+
+  update(speed) {
+    if (this.done) return;
+    const target = this.waypoints[this.wi + 1];
+    if (!target) { this.done = true; return; }
+    const dx = target.x - this.x;
+    const dy = target.y - this.y;
+    const d  = Math.hypot(dx, dy);
+    if (d < speed) {
+      this.x = target.x;
+      this.y = target.y;
+      this.wi++;
+      if (this.wi >= this.waypoints.length - 1) {
+        this.done = true;
+        binCounts[this.bin]++;
+      }
+    } else {
+      this.x += dx / d * speed;
+      this.y += dy / d * speed;
+    }
+  }
+
+  draw() {
+    ctx.beginPath();
+    ctx.arc(this.x, this.y, BR, 0, Math.PI * 2);
+    const g = ctx.createRadialGradient(
+      this.x - 1.2, this.y - 1.2, 0.5,
+      this.x, this.y, BR
+    );
+    g.addColorStop(0, '#e8e0cc');
+    g.addColorStop(1, '#8a8070');
+    ctx.fillStyle = g;
+    ctx.fill();
+  }
+}
+
+// ── 그리기 함수들 ─────────────────────────────────────────────────────
+function drawBG() {
+  ctx.fillStyle = '#1a1008';
+  ctx.fillRect(0, 0, W, H);
+  // 상단 깔때기
+  ctx.fillStyle = '#2a1c0a';
+  ctx.beginPath();
+  ctx.moveTo(0, 0); ctx.lineTo(W, 0);
+  ctx.lineTo(cx + 24, PIN_Y0 - 14);
+  ctx.lineTo(cx - 24, PIN_Y0 - 14);
+  ctx.closePath();
+  ctx.fill();
+}
+
+function drawPins() {
+  pins.forEach(p => {
+    const g = ctx.createRadialGradient(
+      p.x - 1.8, p.y - 1.8, 0.8,
+      p.x, p.y, PR
+    );
+    g.addColorStop(0, '#e0b060');
+    g.addColorStop(0.6, '#b07830');
+    g.addColorStop(1, '#603818');
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, PR, 0, Math.PI * 2);
+    ctx.fillStyle = g;
+    ctx.fill();
+  });
+}
+
+function drawBins() {
+  // 칸막이
+  ctx.strokeStyle = '#7a5828';
+  ctx.lineWidth = 1.8;
+  for (let i = 0; i <= BINS; i++) {
+    const x = binX(0) - SX / 2 + i * SX;
+    ctx.beginPath();
+    ctx.moveTo(x, BIN_TOP);
+    ctx.lineTo(x, H - 14);
+    ctx.stroke();
+  }
+  // 바닥
+  ctx.beginPath();
+  ctx.moveTo(binX(0) - SX / 2, H - 14);
+  ctx.lineTo(binX(BINS - 1) + SX / 2, H - 14);
+  ctx.stroke();
+
+  // 빈에 쌓인 구슬
+  for (let i = 0; i < BINS; i++) {
+    for (let j = 0; j < binCounts[i]; j++) {
+      const bx = binX(i);
+      const by = BIN_TOP + BIN_H - j * (BR * 2 + 1) - BR - 2;
+      if (by < BIN_TOP + BR) break;
+      ctx.beginPath();
+      ctx.arc(bx, by, BR, 0, Math.PI * 2);
+      const g = ctx.createRadialGradient(bx - 1, by - 1, 0.5, bx, by, BR);
+      g.addColorStop(0, '#d8d0b8');
+      g.addColorStop(1, '#787060');
+      ctx.fillStyle = g;
+      ctx.fill();
+    }
+  }
+}
+
+function drawBellCurve() {
+  const total = binCounts.reduce((a, b) => a + b, 0);
+  if (total < 15) return;
+  const maxC = Math.max(...binCounts);
+  const mu   = N / 2;
+  const sig  = Math.sqrt(N * 0.25);
+
+  ctx.beginPath();
+  ctx.strokeStyle = 'rgba(255, 90, 50, 0.88)';
+  ctx.lineWidth = 2;
+  for (let i = 0; i <= BINS; i++) {
+    const xx = binX(i) - SX / 2 + SX / 2 * (i === 0 ? 0 : (i === BINS ? 2 : 1));
+    // sample across bin width
+    for (let s = 0; s <= 8; s++) {
+      const xi  = i - 0.5 + s / 8;
+      const nv  = Math.exp(-0.5 * ((xi - mu) / sig) ** 2);
+      const px  = binX(0) - SX / 2 + xi * SX;
+      const py  = BIN_TOP + BIN_H - nv * maxC * (BR * 2 + 1) - 2;
+      if (i === 0 && s === 0) ctx.moveTo(px, py);
+      else ctx.lineTo(px, py);
+    }
+  }
+  ctx.stroke();
+}
+
+function drawLabel() {
+  const total = binCounts.reduce((a, b) => a + b, 0);
+  ctx.fillStyle = '#c8a060';
+  ctx.font = '13px Georgia, serif';
+  ctx.textAlign = 'right';
+  ctx.fillText(`구슬 수: ${total}`, W - 12, 22);
+
+  // 정규분포 레이블
+  if (total > 50) {
+    ctx.fillStyle = 'rgba(255,90,50,0.75)';
+    ctx.font = '11px Georgia, serif';
+    ctx.fillText('정규분포 곡선', W - 12, H - 20);
+  }
+}
+
+// ── 메인 루프 ─────────────────────────────────────────────────────────
+function frame() {
+  drawBG();
+  drawPins();
+  drawBins();
+
+  const spd = parseInt(document.getElementById('speed').value);
+
+  // 새 구슬 투하
+  if (running) {
+    frameN++;
+    const interval = Math.max(1, Math.round(18 / spd));
+    if (frameN % interval === 0) {
+      activeBalls.push(new Ball());
+      totalDropped++;
+    }
+  }
+
+  // 구슬 업데이트 & 드로우
+  activeBalls = activeBalls.filter(b => {
+    b.update(spd * 1.5);
+    if (!b.done) b.draw();
+    return !b.done;
+  });
+
+  drawBellCurve();
+  drawLabel();
+
+  animId = requestAnimationFrame(frame);
+}
+
+// ── 컨트롤 ────────────────────────────────────────────────────────────
+document.getElementById('btnStart').addEventListener('click', () => {
+  running = !running;
+  document.getElementById('btnStart').textContent = running ? '⏸ 일시정지' : '▶ 계속';
+  if (!animId) animId = requestAnimationFrame(frame);
+});
+
+document.getElementById('btnReset').addEventListener('click', () => {
+  running = false;
+  activeBalls = [];
+  binCounts   = new Array(BINS).fill(0);
+  totalDropped = 0;
+  frameN = 0;
+  document.getElementById('btnStart').textContent = '▶ 시작';
+});
+
+// 초기 그리기
+animId = requestAnimationFrame(frame);
+</script>
+</body>
+</html>
